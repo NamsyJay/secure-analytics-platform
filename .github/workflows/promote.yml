@@ -1,0 +1,94 @@
+name: Promote Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Environment to promote the release into
+        required: true
+        type: choice
+        options:
+          - test
+          - prod
+
+      release_sha:
+        description: Full Git commit SHA already tested in a lower environment
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    name: Validate release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify release commit exists on main
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          git fetch origin main
+
+          if ! git cat-file -e "${RELEASE_SHA}^{commit}"; then
+            echo "Release SHA does not identify a valid commit."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "${RELEASE_SHA}" origin/main; then
+            echo "Release SHA is not part of the main branch."
+            exit 1
+          fi
+
+          echo "Release ${RELEASE_SHA} is valid."
+
+  deploy:
+    name: Deploy to ${{ inputs.target_environment }}
+    needs: validate-release
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ inputs.target_environment }}
+
+    steps:
+      - name: Checkout exact release
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: github-${{ inputs.target_environment }}-${{ github.run_id }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ vars.TERRAFORM_VERSION }}
+
+      - name: Deploy release
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+        run: |
+          ./scripts/deploy.sh \
+            "${{ inputs.target_environment }}" \
+            "${{ inputs.release_sha }}"

@@ -1,0 +1,60 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  terraform-checks:
+    name: Terraform Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ vars.TERRAFORM_VERSION }}
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+
+      - name: Validate Dev configuration
+        run: |
+          terraform -chdir=infrastructure/environments/dev init -backend=false
+          terraform -chdir=infrastructure/environments/dev validate
+
+      - name: Validate Test configuration
+        run: |
+          terraform -chdir=infrastructure/environments/test init -backend=false
+          terraform -chdir=infrastructure/environments/test validate
+
+      - name: Validate Prod configuration
+        run: |
+          terraform -chdir=infrastructure/environments/prod init -backend=false
+          terraform -chdir=infrastructure/environments/prod validate
+
+  shell-checks:
+    name: Shell Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          find scripts -type f -name "*.sh" -print0 |
+            xargs -0 --no-run-if-empty shellcheck
